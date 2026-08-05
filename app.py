@@ -24,24 +24,48 @@ st.markdown("Monitor de trazabilidad de entradas y salidas divido por clasificac
 # ==========================================
 # 1. CARGA Y PREPARACIÓN DE DATOS
 # ==========================================
-@st.cache_data(ttl=60)
+# ==========================================
+# 1. CARGA Y PREPARACIÓN DE DATOS (EN VIVO)
+# ==========================================
+@st.cache_data(ttl=60) # Refresca los datos cada 60 segundos
 def cargar_datos():
-    # URL de exportación CSV de tu Google Sheet (Reemplazar ID)
-    # ID_HOJA = "TU_ID_AQUI"
-    # url = f"https://docs.google.com/spreadsheets/d/{ID_HOJA}/export?format=csv"
+    # ID extraído de tu enlace de Google Sheets
+    ID_HOJA = "12JIS1hNlIPypwbQ1SQ4OssQrCMoMhJ57hcr7MHDz1d8"
+    url = f"https://docs.google.com/spreadsheets/d/{ID_HOJA}/export?format=csv"
     
-    # DATOS DE PRUEBA BASADOS EN TU IMAGEN PARA QUE PUEDAS EJECUTARLO YA MISMO
-    data = {
-        'Marca temporal': ['5/08/2026 7:48:59', '5/08/2026 7:50:20', '5/08/2026 7:50:56', '5/08/2026 7:51:55', '5/08/2026 7:52:38', '6/08/2026 8:00:00', '7/08/2026 9:15:00'],
-        'FECHA DEL MOVIMIENTO:': ['4/02/2026', '1/04/2026', '11/03/2026', '27/02/2026', '27/03/2026', '10/05/2026', '15/06/2026'],
-        'TIPO DE MOVIMIENTO:': ['Ingreso al centro de acopio']*7,
-        'NOMBRE DEL RESIDUO:': ['BATERIAS USADAS', 'BATERIAS USADAS', 'BATERIAS USADAS', 'ENVASES CONTAMINADOS C', 'ENVASES CONTAMINADOS C', 'CARTON', 'PLASTICO'],
-        'CANTIDAD:': [45, 50, 45, 10, 11.2, 120, 85],
-        'UNIDAD DE MEDIDA:': ['KG']*7,
-        'ÁREA GENERADORA:': ['SISTEMAS', 'SISTEMAS', 'SISTEMAS', 'CUARTO DE QUÍMICOS', 'CUARTO DE QUÍMICOS', 'CORTE', 'EMPAQUE'],
-        'RESPONSABLE:': ['RAÚL JAIMES', 'FRANCINIED CHICUÉ', 'RAÚL JAIMES', 'RAÚL JAIMES', 'SAÚL GALVIS', 'MARIA PEREZ', 'JUAN LÓPEZ']
-    }
-    df = pd.DataFrame(data)
+    try:
+        # Pandas lee directamente el CSV en vivo desde Google
+        df = pd.read_csv(url)
+        
+        # Limpiar espacios en los nombres de las columnas por si acaso
+        df.columns = df.columns.str.strip()
+        
+        # Limpieza y conversión de tipos de datos
+        df['FECHA DEL MOVIMIENTO:'] = pd.to_datetime(df['FECHA DEL MOVIMIENTO:'], dayfirst=True, errors='coerce')
+        df['CANTIDAD:'] = pd.to_numeric(df['CANTIDAD:'], errors='coerce').fillna(0)
+        
+        # MOTOR DE CLASIFICACIÓN (Identifica automáticamente si es Peligroso o Aprovechable)
+        def clasificar_residuo(nombre):
+            peligrosos_keywords = ['BATERIA', 'ENVASE CONTAMINADO', 'ACEITE', 'QUIMICO', 'TINTA', 'LUMINARIA', 'WIPE', 'TÓNER']
+            nombre_upper = str(nombre).upper()
+            if any(keyword in nombre_upper for keyword in peligrosos_keywords):
+                return 'Peligroso'
+            return 'Aprovechable'
+        
+        # Aplicamos la clasificación
+        if 'NOMBRE DEL RESIDUO:' in df.columns:
+            df['CATEGORIA'] = df['NOMBRE DEL RESIDUO:'].apply(clasificar_residuo)
+        else:
+            df['CATEGORIA'] = 'Desconocido'
+            
+        return df
+        
+    except Exception as e:
+        st.error(f"⚠️ Error de conexión con Google Sheets: {e}")
+        # Retorna un DataFrame vacío para que la app no colapse
+        return pd.DataFrame()
+
+df = cargar_datos()
     
     # Limpieza y conversión de fechas
     df['FECHA DEL MOVIMIENTO:'] = pd.to_datetime(df['FECHA DEL MOVIMIENTO:'], format='%d/%m/%Y', errors='coerce')
