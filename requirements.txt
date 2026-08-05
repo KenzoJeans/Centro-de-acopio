@@ -1,3 +1,4 @@
 streamlit
 pandas
 plotly
+starlette<0.39.0
