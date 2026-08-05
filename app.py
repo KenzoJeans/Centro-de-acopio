@@ -24,7 +24,7 @@ st.title("📊 Control de Inventario y Centro de Acopio")
 st.markdown("Monitor de trazabilidad de entradas y salidas por cuarto de acopio.")
 
 # 2. FUNCIÓN PARA CARGAR Y LIMPIAR DATOS
-@st.cache_data(ttl=60) # Cache para no saturar Google Sheets, recarga cada 60s
+@st.cache_data(ttl=60)
 def cargar_datos_por_hoja(nombre_pestana):
     ID_HOJA = "12JIS1hNlIPypwbQ1SQ4OssQrCMoMhJ57hcr7MHDz1d8"
     nombre_encoded = urllib.parse.quote(nombre_pestana)
@@ -54,7 +54,7 @@ def cargar_datos_por_hoja(nombre_pestana):
             df['TIPO_MOV_CLEAN'] = df[cols_mov[0]].astype(str).str.upper()
             df['ES_INGRESO'] = df['TIPO_MOV_CLEAN'].apply(lambda x: False if 'SALIDA' in x else True)
         else:
-            df['ES_INGRESO'] = True # Si no hay columna, asumimos que todo es ingreso
+            df['ES_INGRESO'] = True
 
         # Residuo y Área
         cols_residuo = [c for c in df.columns if 'RESIDUO' in c.upper() or 'MATERIAL' in c.upper()]
@@ -76,47 +76,68 @@ df_aprov, col_res_aprov, col_area_aprov, err_aprov = cargar_datos_por_hoja("Cuar
 st.sidebar.header("⚙️ Filtros Globales")
 st.sidebar.markdown("Selecciona el rango de tiempo a consultar:")
 
-# Obtener fechas mínimas y máximas para el calendario
-todas_las_fechas = pd.concat([df_peligrosos['FECHA_CLEAN'], df_aprov['FECHA_CLEAN']]).dropna()
-if not todas_las_fechas.empty:
-    min_date = todas_las_fechas.min().date()
-    max_date = todas_las_fechas.max().date()
+# Obtener fechas de forma segura para evitar KeyErrors
+fechas_disponibles = []
+if not df_peligrosos.empty and 'FECHA_CLEAN' in df_peligrosos.columns:
+    fechas_disponibles.append(df_peligrosos['FECHA_CLEAN'])
+if not df_aprov.empty and 'FECHA_CLEAN' in df_aprov.columns:
+    fechas_disponibles.append(df_aprov['FECHA_CLEAN'])
+
+if fechas_disponibles:
+    todas_las_fechas = pd.concat(fechas_disponibles).dropna()
+    if not todas_las_fechas.empty:
+        min_date = todas_las_fechas.min().date()
+        max_date = todas_las_fechas.max().date()
+    else:
+        min_date, max_date = datetime.today().date(), datetime.today().date()
 else:
     min_date, max_date = datetime.today().date(), datetime.today().date()
 
 fecha_rango = st.sidebar.date_input("Rango de Fechas", [min_date, max_date], min_value=min_date, max_value=max_date)
 
-# Aplicar filtro de fechas a los DataFrames
+# Aplicar filtro de fechas a los DataFrames de forma segura
 if len(fecha_rango) == 2:
     start_date, end_date = fecha_rango
-    mask_pelig = (df_peligrosos['FECHA_CLEAN'].dt.date >= start_date) & (df_peligrosos['FECHA_CLEAN'].dt.date <= end_date)
-    df_peligrosos = df_peligrosos.loc[mask_pelig]
+    if not df_peligrosos.empty and 'FECHA_CLEAN' in df_peligrosos.columns:
+        mask_pelig = (df_peligrosos['FECHA_CLEAN'].dt.date >= start_date) & (df_peligrosos['FECHA_CLEAN'].dt.date <= end_date)
+        df_peligrosos = df_peligrosos.loc[mask_pelig]
     
-    mask_aprov = (df_aprov['FECHA_CLEAN'].dt.date >= start_date) & (df_aprov['FECHA_CLEAN'].dt.date <= end_date)
-    df_aprov = df_aprov.loc[mask_aprov]
+    if not df_aprov.empty and 'FECHA_CLEAN' in df_aprov.columns:
+        mask_aprov = (df_aprov['FECHA_CLEAN'].dt.date >= start_date) & (df_aprov['FECHA_CLEAN'].dt.date <= end_date)
+        df_aprov = df_aprov.loc[mask_aprov]
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tip:** Registra las salidas de disposición final indicando el material exacto para mantener el stock realizado.")
+st.sidebar.info("💡 **Tip:** Registra las salidas a disposición final indicando el material exacto para mantener el stock actualizado.")
 
 # 4. FUNCIÓN PARA CÁLCULO DE INVENTARIO
 def calcular_inventario(df, col_residuo):
     if df.empty:
-        return 0, 0, 0, pd.DataFrame()
+        return 0, 0, 0, pd.DataFrame(), pd.DataFrame()
     
     df_ingresos = df[df['ES_INGRESO'] == True]
     df_salidas = df[df['ES_INGRESO'] == False]
     
-    total_generado = df_ingresos['CANTIDAD_CLEAN'].sum()
-    total_salidas = df_salidas['CANTIDAD_CLEAN'].sum()
+    total_generado = df_ingresos['CANTIDAD_CLEAN'].sum() if not df_ingresos.empty else 0
+    total_salidas = df_salidas['CANTIDAD_CLEAN'].sum() if not df_salidas.empty else 0
     stock_actual = total_generado - total_salidas
     
     # Stock por tipo de residuo
-    ingresos_por_res = df_ingresos.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Ingresos'})
-    salidas_por_res = df_salidas.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Salidas'})
+    if not df_ingresos.empty:
+        ingresos_por_res = df_ingresos.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Ingresos'})
+    else:
+        ingresos_por_res = pd.DataFrame(columns=[col_residuo, 'Ingresos'])
+        
+    if not df_salidas.empty:
+        salidas_por_res = df_salidas.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Salidas'})
+    else:
+        salidas_por_res = pd.DataFrame(columns=[col_residuo, 'Salidas'])
     
-    stock_df = pd.merge(ingresos_por_res, salidas_por_res, on=col_residuo, how='outer').fillna(0)
-    stock_df['Stock Actual'] = stock_df['Ingresos'] - stock_df['Salidas']
-    stock_df = stock_df.sort_values(by='Stock Actual', ascending=True)
+    if not ingresos_por_res.empty or not salidas_por_res.empty:
+        stock_df = pd.merge(ingresos_por_res, salidas_por_res, on=col_residuo, how='outer').fillna(0)
+        stock_df['Stock Actual'] = stock_df['Ingresos'] - stock_df['Salidas']
+        stock_df = stock_df.sort_values(by='Stock Actual', ascending=True)
+    else:
+        stock_df = pd.DataFrame()
     
     return total_generado, total_salidas, stock_actual, stock_df, df_ingresos
 
@@ -127,7 +148,7 @@ tab_aprov, tab_pelig = st.tabs(["♻️ Aprovechables", "☢️ Peligrosos (RESP
 with tab_aprov:
     st.subheader("Inventario de Materiales Reciclables")
     if err_aprov: st.error(err_aprov)
-    elif df_aprov.empty: st.info("No hay registros en el rango de fechas seleccionado.")
+    elif df_aprov.empty: st.info("No hay registros en el rango de fechas seleccionado o la pestaña está vacía.")
     else:
         generado, salidas, stock, stock_df, df_ingresos_aprov = calcular_inventario(df_aprov, col_res_aprov)
         
@@ -166,7 +187,7 @@ with tab_pelig:
             
         if not df_ingresos_pelig.empty and col_area_pelig in df_ingresos_pelig.columns:
             gen_area_p = df_ingresos_pelig.groupby(col_area_pelig)['CANTIDAD_CLEAN'].sum().reset_index().sort_values(by='CANTIDAD_CLEAN', ascending=False)
-            gen_area_p['PORCENTAJE'] = (gen_area_p['CANTIDAD_CLEAN'] / generado_p * 100).round(1)
+            gen_area_p['PORCENTAJE'] = (gen_area_p['CANTIDAD_CLEAN'] / generado_p * 100).round(1) if generado_p > 0 else 0
             fig_area_p = px.bar(gen_area_p, x=col_area_pelig, y='CANTIDAD_CLEAN', text='PORCENTAJE', title="<b>Participación de Generación de RESPEL por Área</b>", template="plotly_dark", color_discrete_sequence=['#f59e0b'])
             fig_area_p.update_traces(texttemplate='%{text}%', textposition='outside')
             st.plotly_chart(fig_area_p, use_container_width=True)
