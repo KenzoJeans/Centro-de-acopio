@@ -4,27 +4,27 @@ import plotly.express as px
 import io
 import urllib.request
 import urllib.parse
+from datetime import datetime
 
 # 1. Configuración de la página
 st.set_page_config(page_title="Control de Acopio | SGA", layout="wide", page_icon="♻️")
 
-# Estilos CSS personalizados
+# Estilos CSS
 st.markdown("""
     <style>
-    .kpi-card {
-        background-color: #1e2430; border: 1px solid #2d3748;
-        padding: 20px; border-radius: 10px; text-align: center;
-    }
-    .kpi-value { font-size: 28px; font-weight: bold; color: #38bdf8; }
-    .kpi-label { font-size: 14px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;}
+    .kpi-card { background-color: #1e2430; border: 1px solid #2d3748; padding: 15px; border-radius: 8px; text-align: center; }
+    .kpi-value { font-size: 26px; font-weight: bold; color: #f8fafc; }
+    .kpi-label { font-size: 12px; color: #94a3b8; text-transform: uppercase; letter-spacing: 1px;}
+    .val-ingreso { color: #38bdf8; } .val-salida { color: #f472b6; } .val-stock { color: #4ade80; }
     .footer { text-align: center; color: #64748b; font-size: 12px; margin-top: 50px; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Control de Ingreso de Residuos al Centro de Acopio")
+st.title("📊 Control de Inventario y Centro de Acopio")
 st.markdown("Monitor de trazabilidad de entradas y salidas por cuarto de acopio.")
 
-# 2. FUNCIÓN PARA CARGAR PESTAÑAS ESPECÍFICAS DE GOOGLE SHEETS
+# 2. FUNCIÓN PARA CARGAR Y LIMPIAR DATOS
+@st.cache_data(ttl=60) # Cache para no saturar Google Sheets, recarga cada 60s
 def cargar_datos_por_hoja(nombre_pestana):
     ID_HOJA = "12JIS1hNlIPypwbQ1SQ4OssQrCMoMhJ57hcr7MHDz1d8"
     nombre_encoded = urllib.parse.quote(nombre_pestana)
@@ -33,168 +33,142 @@ def cargar_datos_por_hoja(nombre_pestana):
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req) as response:
-            csv_data = response.read()
+            df = pd.read_csv(io.BytesIO(response.read()))
             
-        df = pd.read_csv(io.BytesIO(csv_data))
         df.columns = df.columns.str.strip()
         
-        # Limpieza de fechas
+        # Fechas
         cols_fecha = [c for c in df.columns if 'FECHA' in c.upper()]
         if cols_fecha:
-            df['FECHA_CLEAN'] = pd.to_datetime(df[cols_fecha[0]], errors='coerce')
+            df['FECHA_CLEAN'] = pd.to_datetime(df[cols_fecha[0]], format='%d/%m/%Y', errors='coerce')
         else:
             df['FECHA_CLEAN'] = pd.NaT
 
-        # Limpieza de cantidades
+        # Cantidades
         cols_cant = [c for c in df.columns if 'CANTIDAD' in c.upper()]
-        if cols_cant:
-            df['CANTIDAD_CLEAN'] = pd.to_numeric(df[cols_cant[0]], errors='coerce').fillna(0)
-        else:
-            df['CANTIDAD_CLEAN'] = 0
+        df['CANTIDAD_CLEAN'] = pd.to_numeric(df[cols_cant[0]], errors='coerce').fillna(0) if cols_cant else 0
 
-        # Columna de residuo / material
+        # Identificar Entradas vs Salidas
+        cols_mov = [c for c in df.columns if 'MOVIMIENTO' in c.upper()]
+        if cols_mov:
+            df['TIPO_MOV_CLEAN'] = df[cols_mov[0]].astype(str).str.upper()
+            df['ES_INGRESO'] = df['TIPO_MOV_CLEAN'].apply(lambda x: False if 'SALIDA' in x else True)
+        else:
+            df['ES_INGRESO'] = True # Si no hay columna, asumimos que todo es ingreso
+
+        # Residuo y Área
         cols_residuo = [c for c in df.columns if 'RESIDUO' in c.upper() or 'MATERIAL' in c.upper()]
-        col_nombre_residuo = cols_residuo[0] if cols_residuo else (df.columns[0] if not df.empty else "")
+        col_res = cols_residuo[0] if cols_residuo else "Residuo"
         
-        return df, col_nombre_residuo, None
+        cols_area = [c for c in df.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
+        col_area = cols_area[0] if cols_area else "Área"
+
+        return df, col_res, col_area, None
         
     except Exception as e:
-        return pd.DataFrame(), "", str(e)
+        return pd.DataFrame(), "", "", str(e)
 
-# Carga independiente de cada hoja
-df_peligrosos, col_respel, err_respel = cargar_datos_por_hoja("Cuarto de respel")
-df_aprovechables, col_aprov, err_aprov = cargar_datos_por_hoja("Cuarto de residuos aprovechables")
+# Cargar datos
+df_peligrosos, col_res_pelig, col_area_pelig, err_respel = cargar_datos_por_hoja("Cuarto de respel")
+df_aprov, col_res_aprov, col_area_aprov, err_aprov = cargar_datos_por_hoja("Cuarto de residuos aprovechables")
 
-# 3. INTERFAZ DE PESTAÑAS (TABS)
-tab_aprov, tab_pelig = st.tabs(["♻️ Residuos Aprovechables", "☢️ Residuos Peligrosos (RESPEL)"])
+# 3. BARRA LATERAL (SIDEBAR) - FILTROS DE FECHA
+st.sidebar.header("⚙️ Filtros Globales")
+st.sidebar.markdown("Selecciona el rango de tiempo a consultar:")
 
-# ------------------------------------------
-# PESTAÑA 1: APROVECHABLES (ALIMENTACIÓN MANUAL)
-# ------------------------------------------
+# Obtener fechas mínimas y máximas para el calendario
+todas_las_fechas = pd.concat([df_peligrosos['FECHA_CLEAN'], df_aprov['FECHA_CLEAN']]).dropna()
+if not todas_las_fechas.empty:
+    min_date = todas_las_fechas.min().date()
+    max_date = todas_las_fechas.max().date()
+else:
+    min_date, max_date = datetime.today().date(), datetime.today().date()
+
+fecha_rango = st.sidebar.date_input("Rango de Fechas", [min_date, max_date], min_value=min_date, max_value=max_date)
+
+# Aplicar filtro de fechas a los DataFrames
+if len(fecha_rango) == 2:
+    start_date, end_date = fecha_rango
+    mask_pelig = (df_peligrosos['FECHA_CLEAN'].dt.date >= start_date) & (df_peligrosos['FECHA_CLEAN'].dt.date <= end_date)
+    df_peligrosos = df_peligrosos.loc[mask_pelig]
+    
+    mask_aprov = (df_aprov['FECHA_CLEAN'].dt.date >= start_date) & (df_aprov['FECHA_CLEAN'].dt.date <= end_date)
+    df_aprov = df_aprov.loc[mask_aprov]
+
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Tip:** Registra las salidas de disposición final indicando el material exacto para mantener el stock realizado.")
+
+# 4. FUNCIÓN PARA CÁLCULO DE INVENTARIO
+def calcular_inventario(df, col_residuo):
+    if df.empty:
+        return 0, 0, 0, pd.DataFrame()
+    
+    df_ingresos = df[df['ES_INGRESO'] == True]
+    df_salidas = df[df['ES_INGRESO'] == False]
+    
+    total_generado = df_ingresos['CANTIDAD_CLEAN'].sum()
+    total_salidas = df_salidas['CANTIDAD_CLEAN'].sum()
+    stock_actual = total_generado - total_salidas
+    
+    # Stock por tipo de residuo
+    ingresos_por_res = df_ingresos.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Ingresos'})
+    salidas_por_res = df_salidas.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Salidas'})
+    
+    stock_df = pd.merge(ingresos_por_res, salidas_por_res, on=col_residuo, how='outer').fillna(0)
+    stock_df['Stock Actual'] = stock_df['Ingresos'] - stock_df['Salidas']
+    stock_df = stock_df.sort_values(by='Stock Actual', ascending=True)
+    
+    return total_generado, total_salidas, stock_actual, stock_df, df_ingresos
+
+# 5. INTERFAZ DE PESTAÑAS (TABS)
+tab_aprov, tab_pelig = st.tabs(["♻️ Aprovechables", "☢️ Peligrosos (RESPEL)"])
+
+# --- PESTAÑA 1: APROVECHABLES ---
 with tab_aprov:
-    st.subheader("Gestión de Materiales Reciclables / Aprovechables")
-    if err_aprov:
-        st.error(f"⚠️ Error al conectar con la pestaña 'Cuarto de residuos aprovechables': `{err_aprov}`")
-    elif df_aprovechables.empty:
-        st.info("ℹ️ La pestaña 'Cuarto de residuos aprovechables' está lista para recibir datos manuales.")
+    st.subheader("Inventario de Materiales Reciclables")
+    if err_aprov: st.error(err_aprov)
+    elif df_aprov.empty: st.info("No hay registros en el rango de fechas seleccionado.")
     else:
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            total_kg_aprov = df_aprovechables['CANTIDAD_CLEAN'].sum()
-            st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Total Acopiado</div><div class='kpi-value'>{total_kg_aprov:,.1f} KG</div></div>", unsafe_allow_html=True)
-        with col2:
-            movimientos_aprov = len(df_aprovechables)
-            st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Movimientos Registrados</div><div class='kpi-value'>{movimientos_aprov}</div></div>", unsafe_allow_html=True)
-        with col3:
-            st.markdown(f"<div class='kpi-card'><div class='kpi-label'>Estado de Ruta</div><div class='kpi-value' style='color:#4ade80;'>Óptimo</div></div>", unsafe_allow_html=True)
-            
+        generado, salidas, stock, stock_df, df_ingresos_aprov = calcular_inventario(df_aprov, col_res_aprov)
+        
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"<div class='kpi-card'><div class='kpi-label'>Generación Histórica</div><div class='kpi-value val-ingreso'>{generado:,.1f} KG</div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='kpi-card'><div class='kpi-label'>Salidas / Entregas</div><div class='kpi-value val-salida'>{salidas:,.1f} KG</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='kpi-card'><div style='border-bottom: 3px solid #4ade80;'><div class='kpi-label'>Stock Actual en Cuarto</div><div class='kpi-value val-stock'>{stock:,.1f} KG</div></div></div>", unsafe_allow_html=True)
         st.write("---")
         
-        # Gráficos en ancho completo
-        if col_aprov in df_aprovechables.columns:
-            resumen_aprov = df_aprovechables.groupby(col_aprov)['CANTIDAD_CLEAN'].sum().reset_index()
-            resumen_aprov = resumen_aprov.sort_values(by='CANTIDAD_CLEAN', ascending=True)
-            
-            fig_aprov = px.bar(
-                resumen_aprov, 
-                x='CANTIDAD_CLEAN', 
-                y=col_aprov, 
-                orientation='h',
-                title="<b>Masa Total por Tipo de Material Aprovechable (KG)</b>",
-                labels={'CANTIDAD_CLEAN': 'Cantidad Acopiada (KG)', col_aprov: 'Material'},
-                template="plotly_dark",
-                color='CANTIDAD_CLEAN',
-                color_continuous_scale='Greens'
-            )
-            fig_aprov.update_layout(showlegend=False, height=400)
+        if not stock_df.empty:
+            fig_aprov = px.bar(stock_df, x='Stock Actual', y=col_res_aprov, orientation='h', title="<b>Inventario Físico Actual (KG)</b>", template="plotly_dark", color_discrete_sequence=['#4ade80'])
             st.plotly_chart(fig_aprov, use_container_width=True)
             
-        cols_area_aprov = [c for c in df_aprovechables.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
-        if cols_area_aprov:
-            area_aprov = df_aprovechables.groupby(cols_area_aprov[0])['CANTIDAD_CLEAN'].sum().reset_index()
-            area_aprov = area_aprov.sort_values(by='CANTIDAD_CLEAN', ascending=False)
-            
-            fig_area_aprov = px.bar(
-                area_aprov,
-                x=cols_area_aprov[0],
-                y='CANTIDAD_CLEAN',
-                title="<b>Generación de Aprovechables por Área</b>",
-                labels={'CANTIDAD_CLEAN': 'Total Generado (KG)', cols_area_aprov[0]: 'Área Generadora'},
-                template="plotly_dark",
-                color_discrete_sequence=['#4ade80']
-            )
-            fig_area_aprov.update_layout(height=400)
+        if not df_ingresos_aprov.empty and col_area_aprov in df_ingresos_aprov.columns:
+            gen_area = df_ingresos_aprov.groupby(col_area_aprov)['CANTIDAD_CLEAN'].sum().reset_index().sort_values(by='CANTIDAD_CLEAN', ascending=False)
+            fig_area_aprov = px.bar(gen_area, x=col_area_aprov, y='CANTIDAD_CLEAN', title="<b>Fuentes de Generación por Área</b>", template="plotly_dark", color_discrete_sequence=['#38bdf8'])
             st.plotly_chart(fig_area_aprov, use_container_width=True)
-                
-        st.dataframe(df_aprovechables.drop(columns=['CANTIDAD_CLEAN', 'FECHA_CLEAN'], errors='ignore'), use_container_width=True)
 
-# ------------------------------------------
-# PESTAÑA 2: PELIGROSOS (RESPEL - GOOGLE FORM)
-# ------------------------------------------
+# --- PESTAÑA 2: PELIGROSOS ---
 with tab_pelig:
     st.subheader("Auditoría y Control de Sustancias Peligrosas (RESPEL)")
-    if err_respel:
-        st.error(f"⚠️ Error al conectar con la pestaña 'Cuarto de respel': `{err_respel}`")
-    elif df_peligrosos.empty:
-        st.info("ℹ️ Esperando datos en la pestaña 'Cuarto de respel'...")
+    if err_respel: st.error(err_respel)
+    elif df_peligrosos.empty: st.info("No hay registros en el rango de fechas seleccionado.")
     else:
-        cols_area = [c for c in df_peligrosos.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
+        generado_p, salidas_p, stock_p, stock_df_p, df_ingresos_pelig = calcular_inventario(df_peligrosos, col_res_pelig)
         
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            total_kg_pelig = df_peligrosos['CANTIDAD_CLEAN'].sum()
-            st.markdown(f"<div class='kpi-card'><div style='border-left: 4px solid #ef4444;'><div class='kpi-label'>Masa Total (RESPEL)</div><div class='kpi-value'>{total_kg_pelig:,.1f} KG</div></div></div>", unsafe_allow_html=True)
-        with col2:
-            areas_cnt = df_peligrosos[cols_area[0]].nunique() if cols_area else 0
-            st.markdown(f"<div class='kpi-card'><div style='border-left: 4px solid #f59e0b;'><div class='kpi-label'>Áreas Críticas Generadoras</div><div class='kpi-value'>{areas_cnt}</div></div></div>", unsafe_allow_html=True)
-        with col3:
-            st.markdown(f"<div class='kpi-card'><div style='border-left: 4px solid #3b82f6;'><div class='kpi-label'>Estado Matriz Legal</div><div class='kpi-value' style='color:#3b82f6;'>Vigente</div></div></div>", unsafe_allow_html=True)
-
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(f"<div class='kpi-card'><div class='kpi-label'>Generación Histórica</div><div class='kpi-value val-ingreso'>{generado_p:,.1f} KG</div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='kpi-card'><div class='kpi-label'>Salidas con Manifiesto</div><div class='kpi-value val-salida'>{salidas_p:,.1f} KG</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='kpi-card'><div style='border-bottom: 3px solid #ef4444;'><div class='kpi-label'>Stock Actual en Cuarto</div><div class='kpi-value' style='color:#ef4444;'>{stock_p:,.1f} KG</div></div></div>", unsafe_allow_html=True)
         st.write("---")
         
-        # 1. Gráfico de Barras Horizontales para Tipos de RESPEL (Ancho Completo)
-        if col_respel in df_peligrosos.columns:
-            resumen_respel = df_peligrosos.groupby(col_respel)['CANTIDAD_CLEAN'].sum().reset_index()
-            resumen_respel = resumen_respel.sort_values(by='CANTIDAD_CLEAN', ascending=True)
+        if not stock_df_p.empty:
+            fig_respel = px.bar(stock_df_p, x='Stock Actual', y=col_res_pelig, orientation='h', title="<b>Inventario Físico Actual de RESPEL (KG)</b>", template="plotly_dark", color_discrete_sequence=['#ef4444'])
+            st.plotly_chart(fig_respel, use_container_width=True)
             
-            fig_respel_bar = px.bar(
-                resumen_respel, 
-                x='CANTIDAD_CLEAN', 
-                y=col_respel, 
-                orientation='h',
-                title="<b>Distribución Total por Tipo de Residuo Peligroso (KG)</b>",
-                labels={'CANTIDAD_CLEAN': 'Cantidad Acopiada (KG)', col_respel: 'Tipo de Residuo'},
-                template="plotly_dark",
-                color='CANTIDAD_CLEAN',
-                color_continuous_scale='Reds'
-            )
-            fig_respel_bar.update_layout(showlegend=False, height=450)
-            st.plotly_chart(fig_respel_bar, use_container_width=True)
-
-        st.write("---")
-
-        # 2. Gráfico por Áreas Generadoras (Participación % y KG)
-        if cols_area:
-            area_respel = df_peligrosos.groupby(cols_area[0])['CANTIDAD_CLEAN'].sum().reset_index()
-            total_gen = area_respel['CANTIDAD_CLEAN'].sum()
-            area_respel['PORCENTAJE'] = (area_respel['CANTIDAD_CLEAN'] / total_gen * 100).round(1) if total_gen > 0 else 0
-            area_respel = area_respel.sort_values(by='CANTIDAD_CLEAN', ascending=False)
-
-            fig_area = px.bar(
-                area_respel,
-                x=cols_area[0],
-                y='CANTIDAD_CLEAN',
-                text='PORCENTAJE',
-                title="<b>Participación de Generación por Área Generadora (KG y %)</b>",
-                labels={'CANTIDAD_CLEAN': 'Total Generado (KG)', cols_area[0]: 'Área / Sección', 'PORCENTAJE': '% Generación'},
-                template="plotly_dark",
-                color_discrete_sequence=['#f59e0b']
-            )
-            fig_area.update_traces(texttemplate='%{text}%', textposition='outside')
-            fig_area.update_layout(height=450)
-            st.plotly_chart(fig_area, use_container_width=True)
-            
-        st.dataframe(df_peligrosos.drop(columns=['CANTIDAD_CLEAN', 'FECHA_CLEAN'], errors='ignore'), use_container_width=True)
-        st.warning("⚠️ **Análisis de Vulnerabilidad:** Verifique que los residuos peligrosos mantengan su etiquetado estandarizado y el código QR visible para la hoja de seguridad.")
+        if not df_ingresos_pelig.empty and col_area_pelig in df_ingresos_pelig.columns:
+            gen_area_p = df_ingresos_pelig.groupby(col_area_pelig)['CANTIDAD_CLEAN'].sum().reset_index().sort_values(by='CANTIDAD_CLEAN', ascending=False)
+            gen_area_p['PORCENTAJE'] = (gen_area_p['CANTIDAD_CLEAN'] / generado_p * 100).round(1)
+            fig_area_p = px.bar(gen_area_p, x=col_area_pelig, y='CANTIDAD_CLEAN', text='PORCENTAJE', title="<b>Participación de Generación de RESPEL por Área</b>", template="plotly_dark", color_discrete_sequence=['#f59e0b'])
+            fig_area_p.update_traces(texttemplate='%{text}%', textposition='outside')
+            st.plotly_chart(fig_area_p, use_container_width=True)
 
 st.markdown("<div class='footer'>SGA v2.0 · Kenzo Jeans SAS</div>", unsafe_allow_html=True)
