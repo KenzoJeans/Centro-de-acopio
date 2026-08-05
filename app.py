@@ -41,6 +41,9 @@ def cargar_datos_por_hoja(nombre_pestana):
         cols_fecha = [c for c in df.columns if 'FECHA' in c.upper()]
         if cols_fecha:
             df['FECHA_CLEAN'] = pd.to_datetime(df[cols_fecha[0]], format='%d/%m/%Y', errors='coerce')
+            # Intentar formato alternativo si hay nulos (ej. 28-02-2026)
+            if df['FECHA_CLEAN'].isnull().any():
+                df['FECHA_CLEAN'] = df['FECHA_CLEAN'].fillna(pd.to_datetime(df[cols_fecha[0]], format='%d-%m-%Y', errors='coerce'))
         else:
             df['FECHA_CLEAN'] = pd.NaT
 
@@ -61,7 +64,7 @@ def cargar_datos_por_hoja(nombre_pestana):
         col_res = cols_residuo[0] if cols_residuo else "Residuo"
         
         cols_area = [c for c in df.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
-        col_area = cols_area[0] if cols_area else "Área"
+        col_area = cols_area[0] if cols_area else None
 
         return df, col_res, col_area, None
         
@@ -76,7 +79,7 @@ df_aprov, col_res_aprov, col_area_aprov, err_aprov = cargar_datos_por_hoja("Cuar
 st.sidebar.header("⚙️ Filtros Globales")
 st.sidebar.markdown("Selecciona el rango de tiempo a consultar:")
 
-# Obtener fechas de forma segura para evitar KeyErrors
+# Obtener fechas de forma segura
 fechas_disponibles = []
 if not df_peligrosos.empty and 'FECHA_CLEAN' in df_peligrosos.columns:
     fechas_disponibles.append(df_peligrosos['FECHA_CLEAN'])
@@ -95,7 +98,7 @@ else:
 
 fecha_rango = st.sidebar.date_input("Rango de Fechas", [min_date, max_date], min_value=min_date, max_value=max_date)
 
-# Aplicar filtro de fechas a los DataFrames de forma segura
+# Aplicar filtro de fechas a los DataFrames
 if len(fecha_rango) == 2:
     start_date, end_date = fecha_rango
     if not df_peligrosos.empty and 'FECHA_CLEAN' in df_peligrosos.columns:
@@ -107,9 +110,9 @@ if len(fecha_rango) == 2:
         df_aprov = df_aprov.loc[mask_aprov]
 
 st.sidebar.markdown("---")
-st.sidebar.info("💡 **Tip:** Registra las salidas a disposición final indicando el material exacto para mantener el stock actualizado.")
+st.sidebar.info("💡 **Tip:** Usa el filtro superior para evaluar los certificados de disposición y aprovechamiento en un trimestre o semestre específico.")
 
-# 4. FUNCIÓN PARA CÁLCULO DE INVENTARIO
+# 4. FUNCIÓN PARA CÁLCULO DE INVENTARIO (Solo para RESPEL ahora)
 def calcular_inventario(df, col_residuo):
     if df.empty:
         return 0, 0, 0, pd.DataFrame(), pd.DataFrame()
@@ -121,7 +124,6 @@ def calcular_inventario(df, col_residuo):
     total_salidas = df_salidas['CANTIDAD_CLEAN'].sum() if not df_salidas.empty else 0
     stock_actual = total_generado - total_salidas
     
-    # Stock por tipo de residuo
     if not df_ingresos.empty:
         ingresos_por_res = df_ingresos.groupby(col_residuo)['CANTIDAD_CLEAN'].sum().reset_index().rename(columns={'CANTIDAD_CLEAN': 'Ingresos'})
     else:
@@ -142,32 +144,45 @@ def calcular_inventario(df, col_residuo):
     return total_generado, total_salidas, stock_actual, stock_df, df_ingresos
 
 # 5. INTERFAZ DE PESTAÑAS (TABS)
-tab_aprov, tab_pelig = st.tabs(["♻️ Aprovechables", "☢️ Peligrosos (RESPEL)"])
+tab_aprov, tab_pelig = st.tabs(["♻️ Aprovechables Certificados", "☢️ Peligrosos (RESPEL)"])
 
-# --- PESTAÑA 1: APROVECHABLES ---
+# --- PESTAÑA 1: APROVECHABLES (MODIFICADA PARA SALIDAS) ---
 with tab_aprov:
-    st.subheader("Inventario de Materiales Reciclables")
+    st.subheader("Total de Materiales Aprovechados (Salidas Certificadas)")
     if err_aprov: st.error(err_aprov)
-    elif df_aprov.empty: st.info("No hay registros en el rango de fechas seleccionado o la pestaña está vacía.")
+    elif df_aprov.empty: st.info("No hay registros en el rango de fechas seleccionado.")
     else:
-        generado, salidas, stock, stock_df, df_ingresos_aprov = calcular_inventario(df_aprov, col_res_aprov)
+        total_aprovechado = df_aprov['CANTIDAD_CLEAN'].sum()
+        entregas_certificadas = len(df_aprov)
+        materiales_unicos = df_aprov[col_res_aprov].nunique() if col_res_aprov in df_aprov.columns else 0
         
         c1, c2, c3 = st.columns(3)
-        c1.markdown(f"<div class='kpi-card'><div class='kpi-label'>Generación Histórica</div><div class='kpi-value val-ingreso'>{generado:,.1f} KG</div></div>", unsafe_allow_html=True)
-        c2.markdown(f"<div class='kpi-card'><div class='kpi-label'>Salidas / Entregas</div><div class='kpi-value val-salida'>{salidas:,.1f} KG</div></div>", unsafe_allow_html=True)
-        c3.markdown(f"<div class='kpi-card'><div style='border-bottom: 3px solid #4ade80;'><div class='kpi-label'>Stock Actual en Cuarto</div><div class='kpi-value val-stock'>{stock:,.1f} KG</div></div></div>", unsafe_allow_html=True)
+        c1.markdown(f"<div class='kpi-card'><div style='border-bottom: 3px solid #4ade80;'><div class='kpi-label'>Total Recuperado</div><div class='kpi-value val-stock'>{total_aprovechado:,.1f} KG</div></div></div>", unsafe_allow_html=True)
+        c2.markdown(f"<div class='kpi-card'><div class='kpi-label'>Tipos de Materiales</div><div class='kpi-value' style='color:#38bdf8;'>{materiales_unicos}</div></div>", unsafe_allow_html=True)
+        c3.markdown(f"<div class='kpi-card'><div class='kpi-label'>Registros de Salida</div><div class='kpi-value' style='color:#f8fafc;'>{entregas_certificadas}</div></div>", unsafe_allow_html=True)
         st.write("---")
         
-        if not stock_df.empty:
-            fig_aprov = px.bar(stock_df, x='Stock Actual', y=col_res_aprov, orientation='h', title="<b>Inventario Físico Actual (KG)</b>", template="plotly_dark", color_discrete_sequence=['#4ade80'])
-            st.plotly_chart(fig_aprov, use_container_width=True)
+        if col_res_aprov in df_aprov.columns:
+            resumen_aprov = df_aprov.groupby(col_res_aprov)['CANTIDAD_CLEAN'].sum().reset_index()
+            resumen_aprov = resumen_aprov.sort_values(by='CANTIDAD_CLEAN', ascending=True)
             
-        if not df_ingresos_aprov.empty and col_area_aprov in df_ingresos_aprov.columns:
-            gen_area = df_ingresos_aprov.groupby(col_area_aprov)['CANTIDAD_CLEAN'].sum().reset_index().sort_values(by='CANTIDAD_CLEAN', ascending=False)
-            fig_area_aprov = px.bar(gen_area, x=col_area_aprov, y='CANTIDAD_CLEAN', title="<b>Fuentes de Generación por Área</b>", template="plotly_dark", color_discrete_sequence=['#38bdf8'])
-            st.plotly_chart(fig_area_aprov, use_container_width=True)
+            fig_aprov = px.bar(
+                resumen_aprov, 
+                x='CANTIDAD_CLEAN', 
+                y=col_res_aprov, 
+                orientation='h', 
+                title="<b>Volumen Histórico por Tipo de Material Aprovechado (KG)</b>", 
+                labels={'CANTIDAD_CLEAN': 'Cantidad Certificada (KG)', col_res_aprov: 'Material'},
+                template="plotly_dark", 
+                color='CANTIDAD_CLEAN',
+                color_continuous_scale='Greens'
+            )
+            fig_aprov.update_layout(showlegend=False, height=450)
+            st.plotly_chart(fig_aprov, use_container_width=True)
+                
+        st.dataframe(df_aprov.drop(columns=['CANTIDAD_CLEAN', 'FECHA_CLEAN', 'TIPO_MOV_CLEAN', 'ES_INGRESO'], errors='ignore'), use_container_width=True)
 
-# --- PESTAÑA 2: PELIGROSOS ---
+# --- PESTAÑA 2: PELIGROSOS (SE MANTIENE INVENTARIO) ---
 with tab_pelig:
     st.subheader("Auditoría y Control de Sustancias Peligrosas (RESPEL)")
     if err_respel: st.error(err_respel)
@@ -185,7 +200,7 @@ with tab_pelig:
             fig_respel = px.bar(stock_df_p, x='Stock Actual', y=col_res_pelig, orientation='h', title="<b>Inventario Físico Actual de RESPEL (KG)</b>", template="plotly_dark", color_discrete_sequence=['#ef4444'])
             st.plotly_chart(fig_respel, use_container_width=True)
             
-        if not df_ingresos_pelig.empty and col_area_pelig in df_ingresos_pelig.columns:
+        if not df_ingresos_pelig.empty and col_area_pelig and col_area_pelig in df_ingresos_pelig.columns:
             gen_area_p = df_ingresos_pelig.groupby(col_area_pelig)['CANTIDAD_CLEAN'].sum().reset_index().sort_values(by='CANTIDAD_CLEAN', ascending=False)
             gen_area_p['PORCENTAJE'] = (gen_area_p['CANTIDAD_CLEAN'] / generado_p * 100).round(1) if generado_p > 0 else 0
             fig_area_p = px.bar(gen_area_p, x=col_area_pelig, y='CANTIDAD_CLEAN', text='PORCENTAJE', title="<b>Participación de Generación de RESPEL por Área</b>", template="plotly_dark", color_discrete_sequence=['#f59e0b'])
