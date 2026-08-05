@@ -27,7 +27,6 @@ st.markdown("Monitor de trazabilidad de entradas y salidas por cuarto de acopio.
 # 2. FUNCIÓN PARA CARGAR PESTAÑAS ESPECÍFICAS DE GOOGLE SHEETS
 def cargar_datos_por_hoja(nombre_pestana):
     ID_HOJA = "12JIS1hNlIPypwbQ1SQ4OssQrCMoMhJ57hcr7MHDz1d8"
-    # Codificar el nombre de la pestaña para la URL
     nombre_encoded = urllib.parse.quote(nombre_pestana)
     url = f"https://docs.google.com/spreadsheets/d/{ID_HOJA}/gviz/tq?tqx=out:csv&sheet={nombre_encoded}"
     
@@ -91,20 +90,41 @@ with tab_aprov:
             
         st.write("---")
         
-        col_graf1, col_graf2 = st.columns(2)
-        with col_graf1:
-            if col_aprov in df_aprovechables.columns:
-                fig1 = px.pie(df_aprovechables, values='CANTIDAD_CLEAN', names=col_aprov, 
-                              title="Distribución por Tipo de Material", template="plotly_dark", hole=0.4)
-                st.plotly_chart(fig1, use_container_width=True)
-                
-        with col_graf2:
-            cols_area = [c for c in df_aprovechables.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
-            if cols_area:
-                fig2 = px.bar(df_aprovechables.groupby(cols_area[0])['CANTIDAD_CLEAN'].sum().reset_index(), 
-                              x=cols_area[0], y='CANTIDAD_CLEAN', title="Generación por Área", 
-                              template="plotly_dark", color_discrete_sequence=['#4ade80'])
-                st.plotly_chart(fig2, use_container_width=True)
+        # Gráficos en ancho completo
+        if col_aprov in df_aprovechables.columns:
+            resumen_aprov = df_aprovechables.groupby(col_aprov)['CANTIDAD_CLEAN'].sum().reset_index()
+            resumen_aprov = resumen_aprov.sort_values(by='CANTIDAD_CLEAN', ascending=True)
+            
+            fig_aprov = px.bar(
+                resumen_aprov, 
+                x='CANTIDAD_CLEAN', 
+                y=col_aprov, 
+                orientation='h',
+                title="<b>Masa Total por Tipo de Material Aprovechable (KG)</b>",
+                labels={'CANTIDAD_CLEAN': 'Cantidad Acopiada (KG)', col_aprov: 'Material'},
+                template="plotly_dark",
+                color='CANTIDAD_CLEAN',
+                color_continuous_scale='Greens'
+            )
+            fig_aprov.update_layout(showlegend=False, height=400)
+            st.plotly_chart(fig_aprov, use_container_width=True)
+            
+        cols_area_aprov = [c for c in df_aprovechables.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
+        if cols_area_aprov:
+            area_aprov = df_aprovechables.groupby(cols_area_aprov[0])['CANTIDAD_CLEAN'].sum().reset_index()
+            area_aprov = area_aprov.sort_values(by='CANTIDAD_CLEAN', ascending=False)
+            
+            fig_area_aprov = px.bar(
+                area_aprov,
+                x=cols_area_aprov[0],
+                y='CANTIDAD_CLEAN',
+                title="<b>Generación de Aprovechables por Área</b>",
+                labels={'CANTIDAD_CLEAN': 'Total Generado (KG)', cols_area_aprov[0]: 'Área Generadora'},
+                template="plotly_dark",
+                color_discrete_sequence=['#4ade80']
+            )
+            fig_area_aprov.update_layout(height=400)
+            st.plotly_chart(fig_area_aprov, use_container_width=True)
                 
         st.dataframe(df_aprovechables.drop(columns=['CANTIDAD_CLEAN', 'FECHA_CLEAN'], errors='ignore'), use_container_width=True)
 
@@ -118,12 +138,13 @@ with tab_pelig:
     elif df_peligrosos.empty:
         st.info("ℹ️ Esperando datos en la pestaña 'Cuarto de respel'...")
     else:
+        cols_area = [c for c in df_peligrosos.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
+        
         col1, col2, col3 = st.columns(3)
         with col1:
             total_kg_pelig = df_peligrosos['CANTIDAD_CLEAN'].sum()
             st.markdown(f"<div class='kpi-card'><div style='border-left: 4px solid #ef4444;'><div class='kpi-label'>Masa Total (RESPEL)</div><div class='kpi-value'>{total_kg_pelig:,.1f} KG</div></div></div>", unsafe_allow_html=True)
         with col2:
-            cols_area = [c for c in df_peligrosos.columns if 'AREA' in c.upper() or 'ÁREA' in c.upper()]
             areas_cnt = df_peligrosos[cols_area[0]].nunique() if cols_area else 0
             st.markdown(f"<div class='kpi-card'><div style='border-left: 4px solid #f59e0b;'><div class='kpi-label'>Áreas Críticas Generadoras</div><div class='kpi-value'>{areas_cnt}</div></div></div>", unsafe_allow_html=True)
         with col3:
@@ -131,20 +152,47 @@ with tab_pelig:
 
         st.write("---")
         
-        col_graf1, col_graf2 = st.columns(2)
-        with col_graf1:
-            if col_respel in df_peligrosos.columns:
-                fig_respel_pie = px.pie(df_peligrosos, values='CANTIDAD_CLEAN', names=col_respel, 
-                                        title="Distribución de Residuos Peligrosos", template="plotly_dark", hole=0.4)
-                st.plotly_chart(fig_respel_pie, use_container_width=True)
+        # 1. Gráfico de Barras Horizontales para Tipos de RESPEL (Ancho Completo)
+        if col_respel in df_peligrosos.columns:
+            resumen_respel = df_peligrosos.groupby(col_respel)['CANTIDAD_CLEAN'].sum().reset_index()
+            resumen_respel = resumen_respel.sort_values(by='CANTIDAD_CLEAN', ascending=True)
+            
+            fig_respel_bar = px.bar(
+                resumen_respel, 
+                x='CANTIDAD_CLEAN', 
+                y=col_respel, 
+                orientation='h',
+                title="<b>Distribución Total por Tipo de Residuo Peligroso (KG)</b>",
+                labels={'CANTIDAD_CLEAN': 'Cantidad Acopiada (KG)', col_respel: 'Tipo de Residuo'},
+                template="plotly_dark",
+                color='CANTIDAD_CLEAN',
+                color_continuous_scale='Reds'
+            )
+            fig_respel_bar.update_layout(showlegend=False, height=450)
+            st.plotly_chart(fig_respel_bar, use_container_width=True)
 
-        with col_graf2:
-            if 'FECHA_CLEAN' in df_peligrosos.columns and not df_peligrosos['FECHA_CLEAN'].dropna().empty:
-                ingresos_tiempo = df_peligrosos.groupby('FECHA_CLEAN')['CANTIDAD_CLEAN'].sum().reset_index()
-                fig3 = px.line(ingresos_tiempo, x='FECHA_CLEAN', y='CANTIDAD_CLEAN', 
-                               title="Tendencia de Ingreso al Cuarto de RESPEL", markers=True, template="plotly_dark", 
-                               color_discrete_sequence=['#ef4444'])
-                st.plotly_chart(fig3, use_container_width=True)
+        st.write("---")
+
+        # 2. Gráfico por Áreas Generadoras (Participación % y KG)
+        if cols_area:
+            area_respel = df_peligrosos.groupby(cols_area[0])['CANTIDAD_CLEAN'].sum().reset_index()
+            total_gen = area_respel['CANTIDAD_CLEAN'].sum()
+            area_respel['PORCENTAJE'] = (area_respel['CANTIDAD_CLEAN'] / total_gen * 100).round(1) if total_gen > 0 else 0
+            area_respel = area_respel.sort_values(by='CANTIDAD_CLEAN', ascending=False)
+
+            fig_area = px.bar(
+                area_respel,
+                x=cols_area[0],
+                y='CANTIDAD_CLEAN',
+                text='PORCENTAJE',
+                title="<b>Participación de Generación por Área Generadora (KG y %)</b>",
+                labels={'CANTIDAD_CLEAN': 'Total Generado (KG)', cols_area[0]: 'Área / Sección', 'PORCENTAJE': '% Generación'},
+                template="plotly_dark",
+                color_discrete_sequence=['#f59e0b']
+            )
+            fig_area.update_traces(texttemplate='%{text}%', textposition='outside')
+            fig_area.update_layout(height=450)
+            st.plotly_chart(fig_area, use_container_width=True)
             
         st.dataframe(df_peligrosos.drop(columns=['CANTIDAD_CLEAN', 'FECHA_CLEAN'], errors='ignore'), use_container_width=True)
         st.warning("⚠️ **Análisis de Vulnerabilidad:** Verifique que los residuos peligrosos mantengan su etiquetado estandarizado y el código QR visible para la hoja de seguridad.")
